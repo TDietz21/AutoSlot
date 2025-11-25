@@ -52,10 +52,10 @@ class Car:
         self.b = b  # car heading angle in radians
         self.v = 0  # linear velocity (m/s)
         # Lateral dynamics for rear slip
-        self.rear_x, self.rear_y = self.calculate_rear_position(x, y)
         self.slip_angle = 0  # slip angle in radians
         self.lateral_offset_rear = 0  # how far rear is offset from centerline (meters, perpendicular to track)
         self.lateral_velocity_rear = 0  # lateral velocity of rear (m/s)
+        self.rear_x, self.rear_y = self.calculate_rear_position(x, y)
 
         self.driving_state: DRIVING_STATE = "driving"
         self.animation_direction = None
@@ -129,44 +129,32 @@ class Car:
 
         # 4. Car heading angle (direction car is pointing)
         # Car nose points FROM rear TO guide (forward direction)
-        dx, dy = self.guide_x - self.rear_x, self.guide_y - self.rear_y  # reversed: guide - rear instead of rear - guide
+        dx, dy = (
+            self.guide_x - self.rear_x,
+            self.guide_y - self.rear_y,
+        )  # reversed: guide - rear instead of rear - guide
         new_b = math.atan2(dy, dx)
         return new_x, new_y, new_b
 
     def tick(self, deltat):
-        """
-        Basic physics simulation
-
-        Steps:
-        1. Calculate motor force based on voltage and velocity
-        2. Calculate acceleration: a = F / m
-        3. Update velocity: v = v + a * dt
-        4. Update position: s = s + v * dt
-        5. Get x, y, angle from piecewise functions
-        """
         if self.driving_state == "driving":
             # Calculate forces (in Newtons)
             motor_force = self.calculate_motor_force(self.iv, self.v)  # already with slip_angle influence
-            
+
             normal_force = self.mass * gravity
             centripetal_force = self.calculate_centripetal_force()
 
             # Calculate acceleration (F = m*a, so a = F/m), Force in N, mass in g → a in m/s² * 1000
             acceleration = (motor_force / self.mass) * 1000  # convert g to kg in formula
-
-            # Update velocity using Euler integration v(t+dt) = v(t) + a * dt
-            self.v += acceleration * deltat
-
-            # Prevent negative velocity
-            if self.v < 0:
+            self.v += acceleration * deltat  # Euler integration v(t+dt) = v(t) + a * dt
+            if self.v < 0:  # Prevent negative velocity
                 self.v = 0
 
             # Update position along track s(t+dt) = s(t) + v * dt
             distance_increment = self.v * deltat  # meters
             self.s += distance_increment
 
-            self.rear_x
-            self.x, self.y, self.b = self.calculate_rear_dynamics()
+            self.x, self.y, self.b = self.combine_front_rear_dynamics()
 
             if self.iv > 4:
                 self.driving_state = "derailed"
