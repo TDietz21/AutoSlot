@@ -133,26 +133,20 @@ class Car:
         5. Get x, y, angle from piecewise functions
         """
         if self.driving_state == "driving":
-            # Mass in GRAMS - use directly (slot car scale)
-            mass = self.mass  # grams
-
             # Calculate motor force (in Newtons)
             motor_force = self.calculate_motor_force(self.iv, self.v)
 
-            # Calculate acceleration (F = m*a, so a = F/m)
-            # Force in N, mass in g → a in m/s² * 1000
-            acceleration = (motor_force / mass) * 1000  # convert g to kg in formula
+            # Calculate acceleration (F = m*a, so a = F/m), Force in N, mass in g → a in m/s² * 1000
+            acceleration = (motor_force / self.mass) * 1000  # convert g to kg in formula
 
-            # Update velocity using Euler integration
-            # v(t+dt) = v(t) + a * dt
+            # Update velocity using Euler integration v(t+dt) = v(t) + a * dt
             self.v += acceleration * deltat
 
             # Prevent negative velocity
             if self.v < 0:
                 self.v = 0
 
-            # Update position along track
-            # s(t+dt) = s(t) + v * dt
+            # Update position along track s(t+dt) = s(t) + v * dt
             distance_increment = self.v * deltat  # meters
             self.s += distance_increment
 
