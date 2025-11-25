@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 
 import os
+from typing import Literal
 from PIL import Image, ImageTk
 import math
 from config import *
+
+DRIVING_STATE = Literal["driving", "derailed"]
 
 car_img_path = "car1.png" if os.path.exists("car1.png") else "slotcar_track_sim/car1.png"
 car1_img = Image.open(car_img_path)
@@ -51,6 +54,9 @@ class Car:
         self.piecewise_position = piecewise_position
         self.piecewise_angle = piecewise_angle
 
+        self.driving_state: DRIVING_STATE = "driving"
+        self.animation_direction = None
+
     def calculate_motor_force(self, voltage, velocity):
         """
         Calculate motor force with gearbox from slide 12
@@ -93,60 +99,71 @@ class Car:
         4. Update position: s = s + v * dt
         5. Get x, y, angle from piecewise functions
         """
-        # Mass in GRAMS - use directly (slot car scale)
-        mass = self.mass  # grams
+        if self.driving_state == "driving":
+            # Mass in GRAMS - use directly (slot car scale)
+            mass = self.mass  # grams
 
-        # Calculate motor force (in Newtons)
-        motor_force = self.calculate_motor_force(self.iv, self.v)
+            # Calculate motor force (in Newtons)
+            motor_force = self.calculate_motor_force(self.iv, self.v)
 
-        # Calculate acceleration (F = m*a, so a = F/m)
-        # Force in N, mass in g → a in m/s² * 1000
-        acceleration = (motor_force / mass) * 1000  # convert g to kg in formula
+            # Calculate acceleration (F = m*a, so a = F/m)
+            # Force in N, mass in g → a in m/s² * 1000
+            acceleration = (motor_force / mass) * 1000  # convert g to kg in formula
 
-        # Update velocity using Euler integration
-        # v(t+dt) = v(t) + a * dt
-        self.v += acceleration * deltat
+            # Update velocity using Euler integration
+            # v(t+dt) = v(t) + a * dt
+            self.v += acceleration * deltat
 
-        # Prevent negative velocity
-        if self.v < 0:
-            self.v = 0
+            # Prevent negative velocity
+            if self.v < 0:
+                self.v = 0
 
-        # Update position along track
-        # s(t+dt) = s(t) + v * dt
-        distance_increment = self.v * deltat  # meters
-        self.s += distance_increment
+            # Update position along track
+            # s(t+dt) = s(t) + v * dt
+            distance_increment = self.v * deltat  # meters
+            self.s += distance_increment
 
-        # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
+            # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
 
-        # 1. Guide pin position (FIXED to track centerline)
-        guide_x, guide_y = self.piecewise_position.get(self.s)
-        track_angle = self.piecewise_angle.get(self.s)
+            # 1. Guide pin position (FIXED to track centerline)
+            guide_x, guide_y = self.piecewise_position.get(self.s)
+            track_angle = self.piecewise_angle.get(self.s)
 
-        # 2. Rear wheel position (can be offset laterally)
-        # Rear is wheelbase distance BEHIND guide pin along track direction
-        # Track angle points FORWARD, so rear is in OPPOSITE direction
-        rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
-        rear_y_centerline = guide_y - self.wheelbase * math.sin(track_angle)
+            # 2. Rear wheel position (can be offset laterally)
+            # Rear is wheelbase distance BEHIND guide pin along track direction
+            # Track angle points FORWARD, so rear is in OPPOSITE direction
+            rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
+            rear_y_centerline = guide_y - self.wheelbase * math.sin(track_angle)
 
-        # Add lateral offset (perpendicular to track)
-        perpendicular_angle = track_angle + math.pi / 2  # 90° to track
-        rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
-        rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
+            # Add lateral offset (perpendicular to track)
+            perpendicular_angle = track_angle + math.pi / 2  # 90° to track
+            rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
+            rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
 
-        # 3. Center of Gravity position (between guide pin and rear)
-        # CG is at cg_position distance behind guide pin
-        cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
-        self.x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
-        self.y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
+            # 3. Center of Gravity position (between guide pin and rear)
+            # CG is at cg_position distance behind guide pin
+            cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
+            self.x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
+            self.y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
 
-        # 4. Car heading angle (direction car is pointing)
-        # Car nose points FROM rear TO guide (forward direction)
-        dx = guide_x - rear_x  # reversed: guide - rear instead of rear - guide
-        dy = guide_y - rear_y
-        self.b = math.atan2(dy, dx)
+            # 4. Car heading angle (direction car is pointing)
+            # Car nose points FROM rear TO guide (forward direction)
+            dx = guide_x - rear_x  # reversed: guide - rear instead of rear - guide
+            dy = guide_y - rear_y
+            self.b = math.atan2(dy, dx)
 
-        # For now: lateral_offset_rear stays 0 (no slip yet)
-        # We'll add slip dynamics later
+            # For now: lateral_offset_rear stays 0 (no slip yet)
+            # We'll add slip dynamics later
+
+            if self.iv > 1:
+                self.driving_state = "derailed"
+                self.animation_direction = self.b * 180 / math.pi
+                self.v = 0.25
+        elif self.driving_state == "derailed":
+            self.x = self.x + self.v * math.cos(self.animation_direction) * deltat
+            self.y = self.y + self.v * math.sin(self.animation_direction) * deltat
+            self.b = self.b if self.b < 6.28 else self.b - 6.28
+            self.b += 0.15
 
     def draw(self, canvas):
         if self.img:

@@ -6,7 +6,7 @@ Created on Fri Oct 17 09:07:49 2025
 """
 
 SCALE = 0.5
-deltat = 0.05  # 5 ms
+deltat = 0.005  # 5 ms
 gravity = 9.81  # m/s^2
 pixels_per_meter = 128 * SCALE / 0.12
 sw = 1920
