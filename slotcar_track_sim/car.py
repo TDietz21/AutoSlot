@@ -88,6 +88,39 @@ class Car:
 
         return force
 
+    def calculate_rear_dynamics(self):
+        # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
+
+        # 1. Guide pin position (FIXED to track centerline)
+        guide_x, guide_y = self.piecewise_position.get(self.s)
+        track_angle = self.piecewise_angle.get(self.s)
+
+        # 2. Rear wheel position (can be offset laterally)
+        # Rear is wheelbase distance BEHIND guide pin along track direction
+        # Track angle points FORWARD, so rear is in OPPOSITE direction
+        rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
+        rear_y_centerline = guide_y - self.wheelbase * math.sin(track_angle)
+
+        # Add lateral offset (perpendicular to track)
+        perpendicular_angle = track_angle + math.pi / 2  # 90° to track
+        rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
+        rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
+
+        # 3. Center of Gravity position (between guide pin and rear)
+        # CG is at cg_position distance behind guide pin
+        cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
+        new_x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
+        new_y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
+
+        # 4. Car heading angle (direction car is pointing)
+        # Car nose points FROM rear TO guide (forward direction)
+        dx, dy = guide_x - rear_x, guide_y - rear_y  # reversed: guide - rear instead of rear - guide
+        new_b = math.atan2(dy, dx)
+
+        # For now: lateral_offset_rear stays 0 (no slip yet)
+        # We'll add slip dynamics late
+        return new_x, new_y, new_b
+
     def tick(self, deltat):
         """
         Basic physics simulation
@@ -123,42 +156,13 @@ class Car:
             distance_increment = self.v * deltat  # meters
             self.s += distance_increment
 
-            # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
+            self.x, self.y, self.b = self.calculate_rear_dynamics()
 
-            # 1. Guide pin position (FIXED to track centerline)
-            guide_x, guide_y = self.piecewise_position.get(self.s)
-            track_angle = self.piecewise_angle.get(self.s)
-
-            # 2. Rear wheel position (can be offset laterally)
-            # Rear is wheelbase distance BEHIND guide pin along track direction
-            # Track angle points FORWARD, so rear is in OPPOSITE direction
-            rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
-            rear_y_centerline = guide_y - self.wheelbase * math.sin(track_angle)
-
-            # Add lateral offset (perpendicular to track)
-            perpendicular_angle = track_angle + math.pi / 2  # 90° to track
-            rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
-            rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
-
-            # 3. Center of Gravity position (between guide pin and rear)
-            # CG is at cg_position distance behind guide pin
-            cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
-            self.x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
-            self.y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
-
-            # 4. Car heading angle (direction car is pointing)
-            # Car nose points FROM rear TO guide (forward direction)
-            dx = guide_x - rear_x  # reversed: guide - rear instead of rear - guide
-            dy = guide_y - rear_y
-            self.b = math.atan2(dy, dx)
-
-            # For now: lateral_offset_rear stays 0 (no slip yet)
-            # We'll add slip dynamics later
-
-            if self.iv > 1:
+            if self.iv > 4:
                 self.driving_state = "derailed"
                 self.animation_direction = self.b * 180 / math.pi
-                self.v = 0.25
+                self.v = self.v if self.v != 0 else 0.4
+
         elif self.driving_state == "derailed":
             self.x = self.x + self.v * math.cos(self.animation_direction) * deltat
             self.y = self.y + self.v * math.sin(self.animation_direction) * deltat
