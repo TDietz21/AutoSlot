@@ -18,9 +18,13 @@ class Car:
         # Internal State
         self.x = x
         self.y = y
-        self.s = 0  # linear distance along track (meters)
+        self.s = 0  # linear distance along track (meters) - GUIDE PIN position
         self.b = b  # car heading angle in radians
         self.v = 0  # linear velocity (m/s)
+
+        # Lateral dynamics for rear slip
+        self.lateral_offset_rear = 0  # how far rear is offset from centerline (meters, perpendicular to track)
+        self.lateral_velocity_rear = 0  # lateral velocity of rear (m/s)
 
         # Inputs
         self.w = 0  # wheel angle
@@ -38,6 +42,10 @@ class Car:
         self.gear_ratio = parameters["gear_ratio"]
         self.gear_efficiency = parameters["efficiency"]
         self.R = 0.5  # internal motor resistance (ohms)
+
+        # Car geometry (slot car scale in meters)
+        self.wheelbase = 0.08  # 8 cm from guide pin to rear axle
+        self.cg_position = 0.04  # CG is 4 cm behind guide pin (middle of car)
 
         self.piecewise_curvature = piecewise_curvature
         self.piecewise_position = piecewise_position
@@ -108,9 +116,37 @@ class Car:
         distance_increment = self.v * deltat  # meters
         self.s += distance_increment
 
-        # Get position and angle from piecewise functions
-        self.x, self.y = self.piecewise_position.get(self.s)
-        self.b = self.piecewise_angle.get(self.s)
+        # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
+
+        # 1. Guide pin position (FIXED to track centerline)
+        guide_x, guide_y = self.piecewise_position.get(self.s)
+        track_angle = self.piecewise_angle.get(self.s)
+
+        # 2. Rear wheel position (can be offset laterally)
+        # Rear is wheelbase distance BEHIND guide pin along track direction
+        # Track angle points FORWARD, so rear is in OPPOSITE direction
+        rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
+        rear_y_centerline = guide_y - self.wheelbase * math.sin(track_angle)
+
+        # Add lateral offset (perpendicular to track)
+        perpendicular_angle = track_angle + math.pi / 2  # 90° to track
+        rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
+        rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
+
+        # 3. Center of Gravity position (between guide pin and rear)
+        # CG is at cg_position distance behind guide pin
+        cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
+        self.x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
+        self.y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
+
+        # 4. Car heading angle (direction car is pointing)
+        # Car nose points FROM rear TO guide (forward direction)
+        dx = guide_x - rear_x  # reversed: guide - rear instead of rear - guide
+        dy = guide_y - rear_y
+        self.b = math.atan2(dy, dx)
+
+        # For now: lateral_offset_rear stays 0 (no slip yet)
+        # We'll add slip dynamics later
 
     def draw(self, canvas):
         if self.img:
