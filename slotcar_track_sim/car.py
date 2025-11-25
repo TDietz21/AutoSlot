@@ -18,9 +18,9 @@ class Car:
         # Internal State
         self.x = x
         self.y = y
-        self.s = 0  # linear distance in mm
-        self.b = b  # angle in radians
-        self.v = 0  # linear velocity
+        self.s = 0  # linear distance along track (meters)
+        self.b = b  # car heading angle in radians
+        self.v = 0  # linear velocity (m/s)
 
         # Inputs
         self.w = 0  # wheel angle
@@ -28,7 +28,7 @@ class Car:
 
         # Parameters
         self.magnet_go = parameters["max_energy"]
-        self.mass = parameters["mass"]
+        self.mass = parameters["mass"]  # in GRAMS (slot car scale)
         self.static_f = parameters["static_f"]
         self.dynamic_f = parameters["dynamic_f"]
         self.wheel_r = parameters["wheel_r"]
@@ -38,26 +38,78 @@ class Car:
         self.gear_ratio = parameters["gear_ratio"]
         self.gear_efficiency = parameters["efficiency"]
         self.R = 0.5  # internal motor resistance (ohms)
-        self.axisdistance = 0.7  # 7 cm
-        self.guide_torque_max = 10  # Nm (tunable)
 
         self.piecewise_curvature = piecewise_curvature
         self.piecewise_position = piecewise_position
         self.piecewise_angle = piecewise_angle
 
+    def calculate_motor_force(self, voltage, velocity):
+        """
+        Calculate motor force with gearbox from slide 12
+        F(V, v) = (η * N * k_t / (r * R)) * (V - (k_e * N * v) / r)
+
+        Args:
+            voltage: Applied voltage (V)
+            velocity: Linear velocity (m/s)
+
+        Returns:
+            Motor force in Newtons
+        """
+        # Slot car units - keep as-is from sliders
+        r = self.wheel_r / 1000  # wheel radius: mm to meters (still need this for formula)
+        eta = self.gear_efficiency / 100  # efficiency: percentage to decimal
+        N = self.gear_ratio
+
+        # Scale torque constants to realistic values for slot car
+        k_t = self.torque_c * 0.01  # Scale down
+        k_e = self.back_emf_c * 0.01  # Scale down
+
+        R = self.R
+
+        # Calculate back EMF term
+        back_emf_term = (k_e * N * velocity) / r
+
+        # Calculate motor force
+        force = (eta * N * k_t / (r * R)) * (voltage - back_emf_term)
+
+        return force
+
     def tick(self, deltat):
-        # @TODO dirty hack to demo
-        self.v = self.iv
+        """
+        Basic physics simulation
 
-        incs = self.v * deltat
-        self.s += incs
-        c = self.piecewise_curvature.get(self.s)  # curvature in radians/mm
+        Steps:
+        1. Calculate motor force based on voltage and velocity
+        2. Calculate acceleration: a = F / m
+        3. Update velocity: v = v + a * dt
+        4. Update position: s = s + v * dt
+        5. Get x, y, angle from piecewise functions
+        """
+        # Mass in GRAMS - use directly (slot car scale)
+        mass = self.mass  # grams
 
+        # Calculate motor force (in Newtons)
+        motor_force = self.calculate_motor_force(self.iv, self.v)
+
+        # Calculate acceleration (F = m*a, so a = F/m)
+        # Force in N, mass in g → a in m/s² * 1000
+        acceleration = (motor_force / mass) * 1000  # convert g to kg in formula
+
+        # Update velocity using Euler integration
+        # v(t+dt) = v(t) + a * dt
+        self.v += acceleration * deltat
+
+        # Prevent negative velocity
+        if self.v < 0:
+            self.v = 0
+
+        # Update position along track
+        # s(t+dt) = s(t) + v * dt
+        distance_increment = self.v * deltat  # meters
+        self.s += distance_increment
+
+        # Get position and angle from piecewise functions
         self.x, self.y = self.piecewise_position.get(self.s)
-
-        # DEMO WRONG WAY
-        # self.b += c * incs
-
         self.b = self.piecewise_angle.get(self.s)
 
     def draw(self, canvas):
@@ -76,13 +128,11 @@ class Car:
         self.photo = ImageTk.PhotoImage(img)
         self.img = canvas.create_image(screen_x, screen_y, image=self.photo)
 
-        # print('draw car', self.x, self.y, screen_x, screen_y)
-
     def updateParameters(self, parameters: dict) -> None:
         self.iv = parameters["voltage"]
         self.magnet_go = parameters["max_energy"]
         self.mass = parameters["mass"]
-        self.static_f = parameters["statif_f"]
+        self.static_f = parameters["static_f"]
         self.dynamic_f = parameters["dynamic_f"]
         self.wheel_r = parameters["wheel_r"]
         self.torque_c = parameters["torque_c"]
