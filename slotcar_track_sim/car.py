@@ -45,7 +45,7 @@ class Car:
         self.gear_ratio = parameters["gear_ratio"]
         self.gear_efficiency = parameters["efficiency"]
         self.R = 0.5  # internal motor resistance (ohms)
-
+        
         # Car geometry (slot car scale in meters)
         self.wheelbase = 0.08  # 8 cm from guide pin to rear axle
         self.cg_position = 0.04  # CG is 4 cm behind guide pin (middle of car)
