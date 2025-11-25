@@ -5,7 +5,7 @@ import math
 from PIL import Image, ImageTk
 from track import *
 from config import *
-from car import *
+from car2 import *
 from tkinter import ttk
 
 piecewise_function_xy1 = None
