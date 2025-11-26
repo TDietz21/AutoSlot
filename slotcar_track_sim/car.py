@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+# -*- coding: utf-8 -*-
 
 import os
 from typing import Literal
@@ -18,26 +18,15 @@ class Car:
         self.name = name
         self.img = None
 
-        # Internal State
-        self.x = x
-        self.y = y
-        self.s = 0  # linear distance along track (meters) - GUIDE PIN position
-        self.b = b  # car heading angle in radians
-        self.v = 0  # linear velocity (m/s)
-
-        # Lateral dynamics for rear slip
-        self.lateral_offset_rear = 0  # how far rear is offset from centerline (meters, perpendicular to track)
-        self.lateral_velocity_rear = 0  # lateral velocity of rear (m/s)
-
         # Inputs
         self.w = 0  # wheel angle
         self.iv = parameters["voltage"]  # input voltage
 
         # Parameters
-        self.magnet_go = parameters["max_energy"]
-        self.mass = parameters["mass"]  # in GRAMS (slot car scale)
         self.static_f = parameters["static_f"]
         self.dynamic_f = parameters["dynamic_f"]
+
+        # Motor Parameters
         self.wheel_r = parameters["wheel_r"]
         self.torque_c = parameters["torque_c"]
         self.back_emf_c = parameters["back_emf_c"]
@@ -46,13 +35,27 @@ class Car:
         self.gear_efficiency = parameters["efficiency"]
         self.R = 0.5  # internal motor resistance (ohms)
 
-        # Car geometry (slot car scale in meters)
+        # Car Geometry Parameters
+        self.mass = parameters["mass"]  # in GRAMS (slot car scale)
         self.wheelbase = 0.08  # 8 cm from guide pin to rear axle
         self.cg_position = 0.04  # CG is 4 cm behind guide pin (middle of car)
+        self.magnet_go = parameters["max_energy"]  # Magnet is located on the rear axle
 
         self.piecewise_curvature = piecewise_curvature
         self.piecewise_position = piecewise_position
         self.piecewise_angle = piecewise_angle
+
+        # Internal State
+        self.s = 0  # linear distance along track (meters) - GUIDE PIN position
+        self.guide_x = x
+        self.guide_y = y
+        self.b = b  # car heading angle in radians
+        self.v = 0  # linear velocity (m/s)
+        # Lateral dynamics for rear slip
+        self.slip_angle = 0  # slip angle in radians
+        self.lateral_offset_rear = 0  # how far rear is offset from centerline (meters, perpendicular to track)
+        self.lateral_velocity_rear = 0  # lateral velocity of rear (m/s)
+        self.rear_x, self.rear_y = self.calculate_rear_position(x, y)
 
         self.driving_state: DRIVING_STATE = "driving"
         self.animation_direction = None
@@ -69,33 +72,37 @@ class Car:
         Returns:
             Motor force in Newtons
         """
-        # Slot car units - keep as-is from sliders
         r = self.wheel_r / 1000  # wheel radius: mm to meters (still need this for formula)
         eta = self.gear_efficiency / 100  # efficiency: percentage to decimal
         N = self.gear_ratio
-
         # Scale torque constants to realistic values for slot car
         k_t = self.torque_c * 0.01  # Scale down
         k_e = self.back_emf_c * 0.01  # Scale down
-
         R = self.R
 
         # Calculate back EMF term
         back_emf_term = (k_e * N * velocity) / r
 
-        # Calculate motor force
+        # Calculate motor force and reduce by slip_angle
         force = (eta * N * k_t / (r * R)) * (voltage - back_emf_term)
+        reduced_force = force * math.cos(self.slip_angle)
+        return reduced_force
 
-        return force
+    def calculate_centripetal_force(self):
+        curvature = self.piecewise_curvature.get(self.s)
+        print(curvature)
+        if curvature == 0:
+            return 0
 
-    def calculate_rear_dynamics(self):
+        trajectory_radius = 1 / abs(curvature)
+        centripetal_force = self.mass * self.v**2 / trajectory_radius
+        return centripetal_force
+
+    def calculate_rear_position(self, guide_x, guide_y):
         # === POSITION CALCULATION WITH GUIDE PIN MODEL ===
-
-        # 1. Guide pin position (FIXED to track centerline)
-        guide_x, guide_y = self.piecewise_position.get(self.s)
         track_angle = self.piecewise_angle.get(self.s)
 
-        # 2. Rear wheel position (can be offset laterally)
+        # 1. Rear wheel position
         # Rear is wheelbase distance BEHIND guide pin along track direction
         # Track angle points FORWARD, so rear is in OPPOSITE direction
         rear_x_centerline = guide_x - self.wheelbase * math.cos(track_angle)
@@ -106,64 +113,48 @@ class Car:
         rear_x = rear_x_centerline + self.lateral_offset_rear * math.cos(perpendicular_angle)
         rear_y = rear_y_centerline + self.lateral_offset_rear * math.sin(perpendicular_angle)
 
-        # 3. Center of Gravity position (between guide pin and rear)
+        return rear_x, rear_y
+
+    def combine_front_rear_dynamics(self):
+        # 0. Update the x and y coordinates for front and rear axises
+        self.guide_x, self.guide_y = self.piecewise_position.get(self.s)
+        self.rear_x, self.rear_y = self.calculate_rear_position(self.guide_x, self.guide_y)
+
+        # 1. Center of Gravity position (between guide pin and rear)
         # CG is at cg_position distance behind guide pin
+        # Also coincides with animation center
         cg_fraction = self.cg_position / self.wheelbase  # fraction along wheelbase
-        new_x = guide_x * (1 - cg_fraction) + rear_x * cg_fraction
-        new_y = guide_y * (1 - cg_fraction) + rear_y * cg_fraction
+        new_x = self.guide_x * (1 - cg_fraction) + self.rear_x * cg_fraction
+        new_y = self.guide_y * (1 - cg_fraction) + self.rear_y * cg_fraction
 
         # 4. Car heading angle (direction car is pointing)
         # Car nose points FROM rear TO guide (forward direction)
-        dx, dy = guide_x - rear_x, guide_y - rear_y  # reversed: guide - rear instead of rear - guide
+        dx, dy = (
+            self.guide_x - self.rear_x,
+            self.guide_y - self.rear_y,
+        )  # reversed: guide - rear instead of rear - guide
         new_b = math.atan2(dy, dx)
-
-        # For now: lateral_offset_rear stays 0 (no slip yet)
-        # We'll add slip dynamics late
         return new_x, new_y, new_b
 
-    def calculate_centrifugal_force(self):
-        """Calculate lateral force in curves"""
-        if self.v == 0:
-            return 0
-
-        curvature = self.piecewise_curvature.get(self.s)
-        if curvature == 0:  # straight line
-            return 0
-
-        R = 1 / curvature  # radius
-        F_centrifugal = (self.mass / 1000) * (self.v ** 2) / R  # mass in kg
-        return F_centrifugal
-
     def tick(self, deltat):
-        """
-        Basic physics simulation
-
-        Steps:
-        1. Calculate motor force based on voltage and velocity
-        2. Calculate acceleration: a = F / m
-        3. Update velocity: v = v + a * dt
-        4. Update position: s = s + v * dt
-        5. Get x, y, angle from piecewise functions
-        """
         if self.driving_state == "driving":
-            # Calculate motor force (in Newtons)
-            motor_force = self.calculate_motor_force(self.iv, self.v)
+            # Calculate forces (in Newtons)
+            motor_force = self.calculate_motor_force(self.iv, self.v)  # already with slip_angle influence
+
+            normal_force = self.mass * gravity
+            centripetal_force = self.calculate_centripetal_force()
 
             # Calculate acceleration (F = m*a, so a = F/m), Force in N, mass in g → a in m/s² * 1000
             acceleration = (motor_force / self.mass) * 1000  # convert g to kg in formula
-
-            # Update velocity using Euler integration v(t+dt) = v(t) + a * dt
-            self.v += acceleration * deltat
-
-            # Prevent negative velocity
-            if self.v < 0:
+            self.v += acceleration * deltat  # Euler integration v(t+dt) = v(t) + a * dt
+            if self.v < 0:  # Prevent negative velocity
                 self.v = 0
 
             # Update position along track s(t+dt) = s(t) + v * dt
             distance_increment = self.v * deltat  # meters
             self.s += distance_increment
 
-            self.x, self.y, self.b = self.calculate_rear_dynamics()
+            self.x, self.y, self.b = self.combine_front_rear_dynamics()
 
             if self.iv > 11:
                 self.driving_state = "derailed"
@@ -173,8 +164,8 @@ class Car:
         elif self.driving_state == "derailed":
             self.x = self.x + self.v * math.cos(self.animation_direction) * deltat
             self.y = self.y + self.v * math.sin(self.animation_direction) * deltat
-            self.b = self.b if self.b < 6.28 else self.b - 6.28
             self.b += 0.15
+            self.b %= 2 * math.pi
 
     def draw(self, canvas):
         if self.img:
