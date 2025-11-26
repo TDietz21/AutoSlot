@@ -50,7 +50,6 @@ class Car:
         self.piecewise_angle = piecewise_angle
 
         self.derailed = False
-        self.frame_count = 0
 
     # ============== FORCE CALCULATIONS ==============
 
@@ -107,7 +106,7 @@ class Car:
         R = abs(1 / curvature)
         mass_kg = self.mass / 1000
 
-        F_centrifugal = mass_kg * (self.v ** 2) / R
+        F_centrifugal = mass_kg * (self.v**2) / R
         return F_centrifugal
 
     def calculate_F_static_lateral_max(self):
@@ -161,14 +160,13 @@ class Car:
         """
         Main physics simulation
         """
-        self.frame_count += 1
-
         if self.derailed:
-            # Spinning animation
-            self.b_heading += 2.0 * deltat
-            self.v *= 0.95
-            self.x += math.cos(self.b_heading) * 0.5 * deltat
-            self.y += math.sin(self.b_heading) * 0.5 * deltat
+            # Spinning Animation
+            self.b_heading += 0.33 * self.v
+            self.b_heading %= 6.28
+            self.v *= 0.97
+            self.x += math.cos(self.piecewise_angle.get(self.s)) * self.v * deltat
+            self.y += math.sin(self.piecewise_angle.get(self.s)) * self.v * deltat
             if self.v < 0.01:
                 self.v = 0
             return
@@ -228,22 +226,13 @@ class Car:
         F_effective_forward = F_motor * cos_alpha
 
         # === STEP 4: Update velocity ===
-
-        acceleration = F_effective_forward / mass_kg
-
-        # Clamp
         MAX_ACCEL = 30
+        acceleration = F_effective_forward / mass_kg
         acceleration = max(-MAX_ACCEL, min(MAX_ACCEL, acceleration))
 
-        self.v += acceleration * deltat
-
-        if self.v < 0:
-            self.v = 0
-
-        # Cap max velocity
         MAX_V = 15
-        if self.v > MAX_V:
-            self.v = MAX_V
+        self.v += acceleration * deltat
+        self.v = max(0, min(MAX_V, self.v))
 
         # === STEP 5: Update position ===
 
@@ -251,7 +240,7 @@ class Car:
 
         # === STEP 6: Derailment check ===
 
-        if abs(self.slip_angle) > math.radians(50):
+        if abs(self.slip_angle) > math.radians(30):
             self.derailed = True
             print(f"DERAILED at slip_angle = {math.degrees(self.slip_angle):.1f}°")
             return
@@ -284,22 +273,34 @@ class Car:
         self.img = canvas.create_image(screen_x, screen_y, image=self.photo)
 
         # Debug info
-        canvas.create_rectangle(5, 5, 300, 180, fill='black', outline='white', width=2)
+        canvas.create_rectangle(5, 5, 300, 180, fill="black", outline="white", width=2)
 
         status = "DERAILED!" if self.derailed else ("SLIPPING" if abs(self.slip_angle) > 0.05 else "Grip OK")
         color = "red" if self.derailed else ("orange" if abs(self.slip_angle) > 0.05 else "lime")
 
         canvas.create_text(15, 20, anchor="w", text=f"Status: {status}", fill=color, font=("Arial", 14, "bold"))
-        canvas.create_text(15, 50, anchor="w", text=f"Slip Angle: {math.degrees(self.slip_angle):.1f}°", fill="white",
-                           font=("Arial", 11))
+        canvas.create_text(
+            15,
+            50,
+            anchor="w",
+            text=f"Slip Angle: {math.degrees(self.slip_angle):.1f}°",
+            fill="white",
+            font=("Arial", 11),
+        )
         canvas.create_text(15, 75, anchor="w", text=f"Velocity: {self.v:.2f} m/s", fill="white", font=("Arial", 11))
 
         F_motor = self.calculate_F_motor()
         F_eff = F_motor * math.cos(self.slip_angle)
         canvas.create_text(15, 100, anchor="w", text=f"F_motor: {F_motor:.2f} N", fill="white", font=("Arial", 11))
         canvas.create_text(15, 125, anchor="w", text=f"F_eff_forward: {F_eff:.2f} N", fill="cyan", font=("Arial", 11))
-        canvas.create_text(15, 150, anchor="w", text=f"F_centrifugal: {self.calculate_F_centrifugal():.2f} N",
-                           fill="red", font=("Arial", 11))
+        canvas.create_text(
+            15,
+            150,
+            anchor="w",
+            text=f"F_centrifugal: {self.calculate_F_centrifugal():.2f} N",
+            fill="red",
+            font=("Arial", 11),
+        )
 
     def updateParameters(self, parameters: dict) -> None:
         self.voltage = parameters["voltage"]
