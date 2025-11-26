@@ -61,16 +61,13 @@ class Car:
         r = self.wheel_r / 1000  # mm to m
         eta = self.gear_efficiency / 100
         N = self.gear_ratio
-        k_t = self.torque_c * 0.01
-        k_e = self.back_emf_c * 0.01
+        k_t = self.torque_c * 0.001
+        k_e = self.back_emf_c * 0.001
 
         back_emf = (k_e * N * self.v) / r
 
-        if back_emf > self.voltage:
-            return 0.0
-
         F = (eta * N * k_t / (r * self.R_motor)) * (self.voltage - back_emf)
-        return max(0, F)
+        return F
 
     def calculate_N_total(self):
         """
@@ -186,7 +183,7 @@ class Car:
         if not is_slipping:
             # NO SLIP: Grip holds, friction adapts to match centrifugal
             # Slip angle damps back to zero
-            self.slip_angle *= 0.85
+            self.slip_angle = self.slip_angle * 0.9 if self.slip_angle > 0.01 else 0
 
         else:
             # SLIP: Over threshold, rear slides outward
@@ -201,7 +198,7 @@ class Car:
             # Angular acceleration = τ / I (moment of inertia)
             # Simplified: slip_rate proportional to F_net / mass
 
-            slip_rate = F_net_lateral / (mass_kg * 10)  # rad/s
+            slip_rate = F_net_lateral / (mass_kg * 10) if self.v > 0 else 0  # rad/s
 
             # Limit rate
             MAX_SLIP_RATE = 2.0
@@ -240,7 +237,7 @@ class Car:
 
         # === STEP 6: Derailment check ===
 
-        if abs(self.slip_angle) > math.radians(30):
+        if abs(self.slip_angle) >= math.radians(42):
             self.derailed = True
             print(f"DERAILED at slip_angle = {math.degrees(self.slip_angle):.1f}°")
             return

@@ -28,21 +28,17 @@ class App:
 
     def __init__(self, parent):
         self.parent = parent
-
         self.parent.title("Simulation")
         self.parent.geometry(f"{sw}x{sh}")
 
         self.parameters = {}
-        self.cars = []  # Initialize early before setup_control_panel is called
+        self.cars = []
 
-        self.parent.grid_columnconfigure(0, weight=3)  # Control Panel
-        self.parent.grid_columnconfigure(1, weight=7)  # Canvas/Simulation Area
+        self.parent.grid_columnconfigure(0, weight=3)
+        self.parent.grid_columnconfigure(1, weight=7)
         self.parent.grid_rowconfigure(0, weight=1)
 
         self.setup_control_panel()
-
-        # self.canvas = tk.Canvas(parent, width=sw, height=sh, bg='white')
-        # self.canvas.pack(pady=20)
 
         self.canvas = tk.Canvas(parent, bg="white")
         self.canvas.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
@@ -54,45 +50,38 @@ class App:
         self.parent.after(1, self.redraw)
 
     def setup_control_panel(self):
-        """Sets up the left-side panel for parameter control."""
         self.control_frame = ttk.Frame(self.parent, padding="10 10 10 10", relief=tk.RAISED)
-        # Place the control panel in the first column
         self.control_frame.grid(row=0, column=0, sticky="nsew")
-        self.control_frame.grid_rowconfigure(0, weight=0)  # Title row
-        self.control_frame.grid_rowconfigure(1, weight=1)  # Sliders container row
 
-        # Panel Title
         ttk.Label(self.control_frame, text="System Parameters", font=("Arial", 16, "bold")).grid(
             row=0, column=0, columnspan=3, pady=(0, 15), sticky="w"
         )
 
-        # Frame for all the sliders (placed inside control_frame)
         self.sliders_container = ttk.Frame(self.control_frame)
         self.sliders_container.grid(row=1, column=0, columnspan=3, sticky="nsew")
 
         self.create_sliders(self.sliders_container)
 
+        # --------------------------------------
+        # 🚀 RESET BUTTON (integrated)
+        # --------------------------------------
+        reset_btn = ttk.Button(self.control_frame, text="Reset Simulation", command=self.reset_simulation)
+        reset_btn.grid(row=2, column=0, pady=15, sticky="ew")
+
     def create_sliders(self, parent):
-        """Creates and places all parameter sliders and labels."""
-        # Configure columns for the slider area (Label, Slider, Value)
-        parent.grid_columnconfigure(0, weight=1)  # Label
-        parent.grid_columnconfigure(1, weight=3)  # Slider
-        parent.grid_columnconfigure(2, weight=1)  # Value Display
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=3)
+        parent.grid_columnconfigure(2, weight=1)
 
         row_index = 0
         for label_text, min_val, max_val, resolution, unit, var_name in self.param_definitions:
-            # 1. Parameter Label
             ttk.Label(parent, text=f"{label_text}:").grid(row=row_index, column=0, padx=5, pady=5, sticky="w")
 
-            # 2. Value Display Label
-            # Initialize parameter value to min_val
             initial_value = min_val
             self.parameters[var_name] = initial_value
             value_label = ttk.Label(parent, text=f"{initial_value:.4f} {unit}", width=12)
             value_label.grid(row=row_index, column=2, padx=5, pady=5, sticky="e")
 
-            # 3. Slider
-            # Use a lambda wrapper to capture variables for the command callback
             def update_value_wrapper(name, unit, label):
                 return lambda val: self.update_value(name, unit, label, val)
 
@@ -101,45 +90,51 @@ class App:
                 from_=min_val,
                 to=max_val,
                 orient=tk.HORIZONTAL,
-                # resolution=resolution,
                 command=update_value_wrapper(var_name, unit, value_label),
             )
-            # Set initial value
             slider.set(initial_value)
             slider.grid(row=row_index, column=1, padx=5, pady=5, sticky="ew")
 
             row_index += 1
 
     def update_value(self, var_name, unit, value_label, value):
-        """
-        Callback function for the sliders. Updates the internal dictionary
-        and the display label.
-        """
-        # Convert the value from the slider (string) to a float
         new_value = float(value)
-
-        # Store the updated value
         self.parameters[var_name] = new_value
 
-        # Determine display format based on resolution/range
         if var_name == "back_emf":
-            # Specific high-precision format for Back EMF
             formatted_value = f"{new_value:.4f}"
         elif new_value == round(new_value):
-            # Use integer format if it's a whole number
             formatted_value = f"{int(new_value)}"
         else:
-            # General float format (e.g., 1 or 2 decimal places)
-            formatted_value = f"{new_value:.1f}" if (new_value % 1) == 0.0 else f"{new_value:.2f}"
+            formatted_value = f"{new_value:.2f}"
 
-        # Update the display label
         value_label.config(text=f"{formatted_value} {unit}")
 
-        # print(f"[{var_name}] updated to: {new_value} {unit}") # Debug print removed for cleaner output
-
-        # Only update car voltage if cars have been initialized
         if len(self.cars) > 0:
             self.cars[0].updateParameters(self.parameters)
+
+    # ---------------------------------------------------
+    # 🚀 FULL RESET OF SIMULATION (sliders + canvas + car)
+    # ---------------------------------------------------
+    def reset_simulation(self):
+        """Resets all sliders, parameters, cars, and the canvas."""
+        # Reset slider values
+        for child in self.sliders_container.winfo_children():
+            if isinstance(child, ttk.Scale):
+                child.set(float(child.cget("from")))
+
+        # Reset parameters dictionary
+        for _, min_val, _, _, _, var_name in self.param_definitions:
+            self.parameters[var_name] = min_val
+
+        # Clear cars
+        self.cars.clear()
+
+        # Clear canvas
+        self.canvas.delete("all")
+
+        # Rebuild circuit
+        self.initCircuit()
 
     def initCircuit(self):
         global piecewise_function_xy1
@@ -283,13 +278,8 @@ class App:
         self.parent.after(1, self.redraw)
 
     def simulator_thread(self):
-        # Wait a bit for Tkinter to be ready
         time.sleep(0.5)
-
-        # Initialize circuit on the main thread using after()
         self.parent.after(0, self.initCircuit)
-
-        # Keep thread alive but don't do busy-waiting
         while True:
             time.sleep(0.1)
 
