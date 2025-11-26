@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""
+SIMPLIFIED CAR MODEL - Clear Names, Simple Physics
+"""
 
 import os
 from PIL import Image, ImageTk
@@ -15,272 +18,256 @@ class Car:
         self.name = name
         self.img = None
 
-        # Car geometry (derived from image)
-        # Typical slot car image: top = front, bottom = rear, center = CG
-        img_width, img_height = img.size
+        # Car geometry
+        self.a = 0.020  # Distance CG to rear (m)
+        self.b = 0.025  # Distance CG to front/guide pin (m)
 
-        # In meters (slot car scale)
-        self.car_length = img_height * 0.001  # pixels to meters (rough)
-        self.guide_pin_distance = self.car_length * 0.5  # Pin at front (top of image)
-        self.rear_distance = self.car_length * 0.5  # Rear at bottom of image
+        # State variables
+        self.s = 0  # Position along track (m)
+        self.v = 0  # Velocity (m/s)
+        self.slip_angle = 0  # Drift angle (radians)
 
-        # For now, use typical slot car values
-        self.guide_pin_distance = 0.040  # 20mm in front of CG
-        self.rear_distance = 0.025  # 25mm behind CG
-
-        # Internal State - TRACK COORDINATES
-        self.s = 0  # distance along track centerline (meters)
-        self.v = 0  # velocity along track (m/s)
-
-        # Internal State - CAR ORIENTATION
-        # The guide pin position follows the track perfectly (s)
-        # The car body can rotate around the guide pin
-        self.slip_angle = 0  # angle between car heading and velocity direction (radians)
-
-        # Visual state (calculated from s and slip_angle)
-        self.x = x  # CG x position
-        self.y = y  # CG y position
-        self.b = b  # car heading angle
-
-        # Inputs
-        self.w = 0  # wheel angle (not used for slot cars - guide pin steers)
-        self.iv = parameters["voltage"]
+        # Visual state
+        self.x = x
+        self.y = y
+        self.b_heading = b
 
         # Parameters
-        self.magnet_go = parameters["max_energy"]
-        self.mass = parameters["mass"]  # in GRAMS
-        self.static_f = parameters["static_f"]
-        self.dynamic_f = parameters["dynamic_f"]
+        self.voltage = parameters["voltage"]
+        self.mass = parameters["mass"]  # grams
+        self.mu_static = parameters["static_f"]  # μ_s
+        self.mu_dynamic = parameters["dynamic_f"]  # μ_d
+        self.magnet_strength = parameters["max_energy"]  # MGOe
         self.wheel_r = parameters["wheel_r"]
         self.torque_c = parameters["torque_c"]
         self.back_emf_c = parameters["back_emf_c"]
-        self.back_emf = parameters["back_emf"]
         self.gear_ratio = parameters["gear_ratio"]
         self.gear_efficiency = parameters["efficiency"]
-        self.R = 0.5  # internal motor resistance (ohms)
+        self.R_motor = 0.5  # Motor resistance (Ohms)
 
         self.piecewise_curvature = piecewise_curvature
         self.piecewise_position = piecewise_position
         self.piecewise_angle = piecewise_angle
 
-        # Derailment
         self.derailed = False
+        self.frame_count = 0
 
-    def calculate_motor_force(self, voltage, velocity):
+    # ============== FORCE CALCULATIONS ==============
+
+    def calculate_F_motor(self):
         """
-        Calculate motor force with gearbox (slide 12)
-        F(V, v) = (η * N * k_t / (r * R)) * (V - (k_e * N * v) / r)
+        Motor force along car body
+        Formula: F = (η * N * k_t / (r * R)) * (V - k_e * N * v / r)
         """
-        r = self.wheel_r / 1000  # mm to meters
+        r = self.wheel_r / 1000  # mm to m
         eta = self.gear_efficiency / 100
         N = self.gear_ratio
         k_t = self.torque_c * 0.01
         k_e = self.back_emf_c * 0.01
-        R = self.R
 
-        back_emf_term = (k_e * N * velocity) / r
-        force = (eta * N * k_t / (r * R)) * (voltage - back_emf_term)
+        back_emf = (k_e * N * self.v) / r
 
-        return force
+        if back_emf > self.voltage:
+            return 0.0
 
-    def calculate_centrifugal_force(self):
+        F = (eta * N * k_t / (r * self.R_motor)) * (self.voltage - back_emf)
+        return max(0, F)
+
+    def calculate_N_total(self):
         """
-        Centrifugal force at the REAR of the car
-        F = m * v² / R
+        Total normal force (perpendicular to track surface)
+        Formula: N = m*g + F_magnet
+        """
+        mass_kg = self.mass / 1000
+        g = 9.81
 
-        This acts at distance 'rear_distance' from CG
+        # Weight
+        N_weight = mass_kg * g
+
+        # Magnet adds downforce
+        F_magnet_down = self.magnet_strength * 0.05  # MGOe to Newtons (simplified)
+
+        N_total = N_weight + F_magnet_down
+        return N_total
+
+    def calculate_F_centrifugal(self):
+        """
+        Centrifugal force (apparent outward force in rotating frame)
+        Formula: F = m * v² / R
+        Direction: Perpendicular to velocity, away from curve center
         """
         if self.v == 0:
             return 0
 
         curvature = self.piecewise_curvature.get(self.s)
 
-        if abs(curvature) < 0.0001:  # straight
+        if abs(curvature) < 0.0001:  # Straight section
             return 0
 
         R = abs(1 / curvature)
         mass_kg = self.mass / 1000
 
         F_centrifugal = mass_kg * (self.v ** 2) / R
-
         return F_centrifugal
 
-    def calculate_max_lateral_grip(self):
+    def calculate_F_static_lateral_max(self):
         """
-        Maximum lateral grip before sliding
-        F_max = μ_s * (m*g + F_magnet)
+        Maximum lateral grip BEFORE slip starts (threshold)
+        Formula: F_max = μ_s * N
+        This is NOT a force that acts - it's a LIMIT
         """
-        mass_kg = self.mass / 1000
-        g = 9.81
-
-        # Base normal force
-        N_base = mass_kg * g
-
-        # Magnet adds downforce (simplified model)
-        F_magnet_down = self.magnet_go * 0.05  # MGOe to Newtons
-
-        N_total = N_base + F_magnet_down
-
-        # Static friction threshold
-        F_max = self.static_f * N_total
-
+        N = self.calculate_N_total()
+        F_max = self.mu_static * N
         return F_max
 
-    def calculate_lateral_friction(self):
+    def calculate_F_dynamic_lateral(self):
         """
-        Actual lateral friction force when sliding
-        F = μ_d * (m*g + F_magnet)
+        Lateral friction DURING slip (actual force)
+        Formula: F = μ_d * N
+        Direction: Toward curve center
         """
-        mass_kg = self.mass / 1000
-        g = 9.81
-
-        N_base = mass_kg * g
-        F_magnet_down = self.magnet_go * 0.05
-        N_total = N_base + F_magnet_down
-
-        F_friction = self.dynamic_f * N_total
-
+        N = self.calculate_N_total()
+        F_friction = self.mu_dynamic * N
         return F_friction
+
+    def calculate_F_magnet_restoring(self):
+        """
+        SIMPLIFIED magnetic restoring force
+        Magnet wants to be above rail. If offset, pulls back.
+
+        Formula: F = -k * offset (linear spring, up to limit)
+        k = magnet_strength * 10
+
+        At offset > 0.015m (15mm): F = 0 (too far, no magnetic effect)
+        """
+        # Spring constant depends on magnet strength
+        k = self.magnet_strength * 10  # N/m
+
+        # Lateral offset (how far rear is from centerline)
+        # We approximate from slip angle: offset ≈ a * sin(slip_angle)
+        offset = self.a * math.sin(self.slip_angle)
+
+        # Linear restoring force
+        if abs(offset) < 0.015:  # Within 15mm
+            F_restore = -k * offset
+        else:
+            F_restore = 0  # Too far, no magnetic pull
+
+        return F_restore
+
+    # ============== PHYSICS TICK ==============
 
     def tick(self, deltat):
         """
-        CLEAN PHYSICS SIMULATION
-
-        Key concepts:
-        1. Guide pin follows track perfectly (position s)
-        2. Motor provides forward force along car heading
-        3. Centrifugal force tries to push rear outward
-        4. Friction resists lateral motion
-        5. If centrifugal > grip → rear slides → slip angle grows
-        6. Forward force reduced by cos(slip_angle)
+        Main physics simulation
         """
+        self.frame_count += 1
 
         if self.derailed:
-            # Spinning animation when derailed
-            self.b += 2.0 * deltat  # Rotate fast
-            self.v *= 0.95  # Slow down
-
-            # Move off track
-            self.x += math.cos(self.b) * 0.5 * deltat
-            self.y += math.sin(self.b) * 0.5 * deltat
-
+            # Spinning animation
+            self.b_heading += 2.0 * deltat
+            self.v *= 0.95
+            self.x += math.cos(self.b_heading) * 0.5 * deltat
+            self.y += math.sin(self.b_heading) * 0.5 * deltat
             if self.v < 0.01:
                 self.v = 0
             return
 
         mass_kg = self.mass / 1000
 
-        # === STEP 1: CALCULATE FORCES ===
+        # === STEP 1: Calculate all forces ===
 
-        # Motor force (always acts along car heading)
-        F_motor = self.calculate_motor_force(self.iv, self.v)
+        F_motor = self.calculate_F_motor()  # Along car body
+        F_centrifugal = self.calculate_F_centrifugal()  # Outward in curve
+        F_max_static = self.calculate_F_static_lateral_max()  # Threshold
 
-        # CRITICAL FIX: Prevent negative motor force causing oscillation
-        if F_motor < 0:
-            F_motor = 0
+        # === STEP 2: Check if slipping laterally ===
 
-        # Centrifugal force (tries to push rear outward)
-        F_centrifugal = self.calculate_centrifugal_force()
+        is_slipping = F_centrifugal > F_max_static
 
-        # Maximum lateral grip available
-        F_max_lateral_grip = self.calculate_max_lateral_grip()
-
-        # === STEP 2: CHECK IF REAR IS SLIDING ===
-
-        is_sliding = F_centrifugal > F_max_lateral_grip
-
-        if not is_sliding:
-            # === NO SLIDE: Perfect grip ===
-            # Friction perfectly balances centrifugal force
-            # Slip angle gradually returns to zero
-
-            self.slip_angle *= 0.8  # Smooth damping
+        if not is_slipping:
+            # NO SLIP: Grip holds, friction adapts to match centrifugal
+            # Slip angle damps back to zero
+            self.slip_angle *= 0.85
 
         else:
-            # === SLIDE: Rear is slipping laterally ===
-            # Friction can't fully resist centrifugal force
-            # Net lateral force causes slip angle to grow
+            # SLIP: Over threshold, rear slides outward
+            F_friction_lateral = self.calculate_F_dynamic_lateral()
+            F_magnet_restore = self.calculate_F_magnet_restoring()
 
-            F_lateral_friction = self.calculate_lateral_friction()  # μ_d * N
+            # Net lateral force
+            F_net_lateral = F_centrifugal - F_friction_lateral + F_magnet_restore
 
-            # Net lateral force at rear
-            F_net_lateral = F_centrifugal - F_lateral_friction
+            # This creates torque about guide pin: τ = F * distance
+            # τ = F_net_lateral * self.a (distance to rear)
+            # Angular acceleration = τ / I (moment of inertia)
+            # Simplified: slip_rate proportional to F_net / mass
 
-            # This creates a torque around the guide pin (slide 16)
-            # τ = F * distance
-            # α_angular = τ / I
-            # For simplicity, we model slip angle rate directly
+            slip_rate = F_net_lateral / (mass_kg * 10)  # rad/s
 
-            # Slip angle rate (radians per second)
-            # Larger net force = faster slip growth
-            slip_rate = F_net_lateral / (mass_kg * 10)  # Simplified dynamics
+            # Limit rate
+            MAX_SLIP_RATE = 2.0
+            slip_rate = max(-MAX_SLIP_RATE, min(MAX_SLIP_RATE, slip_rate))
 
-            # Update slip angle with clamping
-            delta_slip = slip_rate * deltat
-            self.slip_angle += delta_slip
+            self.slip_angle += slip_rate * deltat
 
-            # Limit slip angle
+            # Clamp slip angle
             MAX_SLIP = math.radians(50)
             self.slip_angle = max(-MAX_SLIP, min(MAX_SLIP, self.slip_angle))
 
-        # === STEP 3: EFFECTIVE FORWARD FORCE (slide 16) ===
+        # === STEP 3: Effective forward force ===
 
-        # Motor force acts along car heading
-        # But velocity is along track direction
-        # So effective forward force = F_motor * cos(slip_angle)
+        # F_motor acts along car body
+        # Velocity is along track
+        # Component in velocity direction: cos(slip_angle)
 
-        # CRITICAL FIX: Use abs() to prevent sign issues
-        cos_slip = math.cos(self.slip_angle)
-        F_effective_forward = F_motor * abs(cos_slip)
+        cos_alpha = math.cos(self.slip_angle)
+        if cos_alpha < 0:
+            cos_alpha = 0
 
-        # Additional safety: minimum force threshold
-        if F_effective_forward < 0.001:
-            F_effective_forward = 0
+        F_effective_forward = F_motor * cos_alpha
 
-        # === STEP 4: UPDATE VELOCITY ===
+        # === STEP 4: Update velocity ===
 
         acceleration = F_effective_forward / mass_kg
 
-        # CRITICAL FIX: Clamp acceleration to reasonable values
-        MAX_ACCEL = 50  # m/s²
+        # Clamp
+        MAX_ACCEL = 30
         acceleration = max(-MAX_ACCEL, min(MAX_ACCEL, acceleration))
 
         self.v += acceleration * deltat
 
-        # CRITICAL FIX: Never negative velocity
         if self.v < 0:
             self.v = 0
 
-        # CRITICAL FIX: Maximum velocity cap (prevent runaway)
-        MAX_VELOCITY = 20  # m/s
-        if self.v > MAX_VELOCITY:
-            self.v = MAX_VELOCITY
+        # Cap max velocity
+        MAX_V = 15
+        if self.v > MAX_V:
+            self.v = MAX_V
 
-        # === STEP 5: UPDATE POSITION ALONG TRACK ===
+        # === STEP 5: Update position ===
 
-        # Velocity is along track direction
         self.s += self.v * deltat
 
-        # === STEP 6: DERAILMENT CHECK ===
+        # === STEP 6: Derailment check ===
 
         if abs(self.slip_angle) > math.radians(50):
-            if not self.derailed:
-                self.derailed = True
-                print(f"DERAILED! Slip angle = {math.degrees(self.slip_angle):.1f}°")
+            self.derailed = True
+            print(f"DERAILED at slip_angle = {math.degrees(self.slip_angle):.1f}°")
             return
 
-        # === STEP 7: CALCULATE VISUAL POSITION ===
+        # === STEP 7: Visual position ===
 
-        # Guide pin position (follows track perfectly)
         track_angle = self.piecewise_angle.get(self.s)
         pin_x, pin_y = self.piecewise_position.get(self.s)
 
-        # Car heading = track angle + slip angle
-        self.b = track_angle + self.slip_angle
+        self.b_heading = track_angle + self.slip_angle
 
-        # CG is behind the guide pin
-        self.x = pin_x - self.guide_pin_distance * math.cos(self.b)
-        self.y = pin_y - self.guide_pin_distance * math.sin(self.b)
+        # CG is behind guide pin
+        self.x = pin_x - self.b * math.cos(self.b_heading)
+        self.y = pin_y - self.b * math.sin(self.b_heading)
+
+    # ============== DRAWING ==============
 
     def draw(self, canvas):
         if self.img:
@@ -288,56 +275,40 @@ class Car:
 
         ow, oh = self.fi.size
         screen_x, screen_y = m_to_px(canvas, self.x, self.y)
-        rot_angle = self.b * 180 / math.pi
+        rot_angle = self.b_heading * 180 / math.pi
 
-        img = self.fi.rotate(-90 + (rot_angle), resample=Image.BICUBIC)
+        img = self.fi.rotate(-90 + rot_angle, resample=Image.BICUBIC)
         img = img.resize((int(ow * SCALE), int(oh * SCALE)), Image.Resampling.LANCZOS)
 
         self.photo = ImageTk.PhotoImage(img)
         self.img = canvas.create_image(screen_x, screen_y, image=self.photo)
 
-        # === DEBUG INFO ===
-        canvas.create_rectangle(5, 5, 280, 160, fill='black', outline='white', width=2)
+        # Debug info
+        canvas.create_rectangle(5, 5, 300, 180, fill='black', outline='white', width=2)
 
-        # Status
-        is_sliding = abs(self.slip_angle) > math.radians(2)  # 2 degree threshold
-        status_color = "red" if self.derailed else ("orange" if is_sliding else "lime")
-        status_text = "DERAILED!" if self.derailed else ("SLIDING" if is_sliding else "Grip OK")
-        canvas.create_text(15, 20, anchor="w", text=f"Status: {status_text}",
-                           fill=status_color, font=("Arial", 14, "bold"))
+        status = "DERAILED!" if self.derailed else ("SLIPPING" if abs(self.slip_angle) > 0.05 else "Grip OK")
+        color = "red" if self.derailed else ("orange" if abs(self.slip_angle) > 0.05 else "lime")
 
-        # Slip angle
-        slip_deg = self.slip_angle * 180 / math.pi
-        canvas.create_text(15, 50, anchor="w",
-                           text=f"Slip Angle: {slip_deg:.1f}°",
-                           fill="white", font=("Arial", 12))
+        canvas.create_text(15, 20, anchor="w", text=f"Status: {status}", fill=color, font=("Arial", 14, "bold"))
+        canvas.create_text(15, 50, anchor="w", text=f"Slip Angle: {math.degrees(self.slip_angle):.1f}°", fill="white",
+                           font=("Arial", 11))
+        canvas.create_text(15, 75, anchor="w", text=f"Velocity: {self.v:.2f} m/s", fill="white", font=("Arial", 11))
 
-        # Velocity
-        canvas.create_text(15, 80, anchor="w",
-                           text=f"Velocity: {self.v:.2f} m/s",
-                           fill="white", font=("Arial", 12))
-
-        # Motor force
-        F_motor = self.calculate_motor_force(self.iv, self.v)
-        canvas.create_text(15, 110, anchor="w",
-                           text=f"Motor Force: {F_motor:.1f} N",
-                           fill="white", font=("Arial", 12))
-
-        # Effective forward
+        F_motor = self.calculate_F_motor()
         F_eff = F_motor * math.cos(self.slip_angle)
-        canvas.create_text(15, 140, anchor="w",
-                           text=f"Eff. Forward: {F_eff:.1f} N",
-                           fill="cyan", font=("Arial", 12))
+        canvas.create_text(15, 100, anchor="w", text=f"F_motor: {F_motor:.2f} N", fill="white", font=("Arial", 11))
+        canvas.create_text(15, 125, anchor="w", text=f"F_eff_forward: {F_eff:.2f} N", fill="cyan", font=("Arial", 11))
+        canvas.create_text(15, 150, anchor="w", text=f"F_centrifugal: {self.calculate_F_centrifugal():.2f} N",
+                           fill="red", font=("Arial", 11))
 
     def updateParameters(self, parameters: dict) -> None:
-        self.iv = parameters["voltage"]
-        self.magnet_go = parameters["max_energy"]
+        self.voltage = parameters["voltage"]
         self.mass = parameters["mass"]
-        self.static_f = parameters["static_f"]
-        self.dynamic_f = parameters["dynamic_f"]
+        self.mu_static = parameters["static_f"]
+        self.mu_dynamic = parameters["dynamic_f"]
+        self.magnet_strength = parameters["max_energy"]
         self.wheel_r = parameters["wheel_r"]
         self.torque_c = parameters["torque_c"]
         self.back_emf_c = parameters["back_emf_c"]
-        self.back_emf = parameters["back_emf"]
         self.gear_ratio = parameters["gear_ratio"]
         self.gear_efficiency = parameters["efficiency"]
